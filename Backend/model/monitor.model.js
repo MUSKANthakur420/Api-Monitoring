@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 import pool from "../config/db.js";
 
 const createMonitor = async (userId, name, url, intervalSeconds = 60) => {
@@ -39,31 +38,11 @@ const getMonitorsByUserId = async (userId) => {
          WHERE m.user_id = $1
          GROUP BY m.id
          ORDER BY m.created_at DESC`,
-=======
-import pool from '../config/db.js';
-const createMonitor=async(userId,name,url)=>{
-    const result=await pool.query(
-        `INSERT INTO monitors (user_id, name, url)
-        VALUES
-        ($1, $2, $3)
-        RETURNING id, user_id, name, url,is_active, created_at, updated_at`,
-        [userId,name,url]
-    );
-    return result.rows[0];
-};
-const getMonitorsByUserId = async (userId) => {
-    const result = await pool.query(
-        `SELECT id, name, url, is_active, created_at
-         FROM monitors
-         WHERE user_id = $1
-         ORDER BY created_at DESC`,
->>>>>>> 5f82509b85e6ab2ec0944536589a9d435b5aab48
         [userId]
     );
 
     return result.rows;
 };
-<<<<<<< HEAD
 
 const findMonitorById = async (id, userId) => {
     let query = `SELECT * FROM monitors WHERE id = $1`;
@@ -178,27 +157,4 @@ const Monitor = {
     getGlobalDashboardSummary,
 };
 
-=======
-const findMonitorById=async(id,userId)=>{
-    const result=await pool.query(
-        `SELECT * FROM monitors WHERE id=$1 AND user_id = $2`,[id,userId]
-    );
-    return result.rows[0];
-}
-const updateMonitorById=async(id,userId,name,url)=>{
-    const result=await pool.query(
-        `UPDATE monitors SET name=$1,url=$2 WHERE id=$3 AND user_id = $4 RETURNING id, name, url, is_active, created_at, updated_at`,
-        [name,url,id,userId]
-    );
-    return result.rows[0];
-}
-const deleteMonitorById=async(id,userId)=>{
-    const result=await pool.query(
-        `DELETE FROM monitors WHERE id=$1 AND user_id = $2 RETURNING id, name, url, is_active, created_at, updated_at`,
-        [id,userId]
-    );
-    return result.rows[0];
-}
-const Monitor= {createMonitor,getMonitorsByUserId,findMonitorById,updateMonitorById,deleteMonitorById};
->>>>>>> 5f82509b85e6ab2ec0944536589a9d435b5aab48
 export default Monitor;
