@@ -1,4 +1,12 @@
-const API_BASE = "/api/v1";
+// Base API endpoint URL
+// 1. Uses VITE_API_URL or VITE_API_BASE_URL if set in environment (Vercel)
+// 2. In production, defaults to deployed Render backend
+// 3. In local development, falls back to '/api/v1' for Vite proxy
+const RAW_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL;
+
+const API_BASE = RAW_URL
+  ? (RAW_URL.endsWith("/api/v1") ? RAW_URL : `${RAW_URL.replace(/\/+$/, "")}/api/v1`)
+  : (import.meta.env.PROD ? "https://api-monitoring-alal.onrender.com/api/v1" : "/api/v1");
 
 export const getAuthToken = () => localStorage.getItem("api_monitor_token");
 export const setAuthToken = (token) => {

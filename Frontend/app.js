@@ -1,6 +1,8 @@
 // API Sentinel Frontend Application
 
-const API_BASE = "/api/v1";
+const API_BASE = (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"))
+    ? "/api/v1"
+    : "https://api-monitoring-alal.onrender.com/api/v1";
 
 // State
 let currentUser = null;

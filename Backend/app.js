@@ -12,8 +12,15 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
+const configuredOrigins = (process.env.CORS_ORIGIN || "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean);
+
 const allowedOrigins = [
-    process.env.CORS_ORIGIN || "http://localhost:5173",
+    ...configuredOrigins,
+    "https://apimonitoring-jacqp9q52-420royalrajput50806-5145s-projects.vercel.app",
+    "http://localhost:5173",
     "http://localhost:3000",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:3000",
@@ -24,11 +31,20 @@ const allowedOrigins = [
 app.use(
     cors({
         origin: function (origin, callback) {
-            // Allow requests with no origin (e.g. mobile apps, curl, postman)
-            if (!origin || allowedOrigins.includes(origin)) {
+            // Allow requests with no origin (e.g. mobile apps, curl, postman, server-to-server)
+            if (!origin) return callback(null, true);
+
+            // Allow if in explicit allowed list, from vercel.app, or local development
+            if (
+                allowedOrigins.includes(origin) ||
+                origin.endsWith(".vercel.app") ||
+                origin.includes("localhost") ||
+                origin.includes("127.0.0.1")
+            ) {
                 return callback(null, true);
             }
-            return callback(null, true); // Dev-friendly permissive
+
+            return callback(null, true); // Permissive fallback
         },
         credentials: true,
         methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],

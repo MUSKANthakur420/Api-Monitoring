@@ -1,0 +1,18 @@
+{
+  "buildCommand": "cd Frontend && npm install && npm run build",
+  "outputDirectory": "Frontend/dist",
+  "rewrites": [
+    {
+      "source": "/api/v1/:path*",
+      "destination": "https://api-monitoring-alal.onrender.com/api/v1/:path*"
+    },
+    {
+      "source": "/health",
+      "destination": "https://api-monitoring-alal.onrender.com/health"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}

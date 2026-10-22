@@ -133,7 +133,7 @@ const sendDowntimeAlert = async ({
     try {
         const { transporter: mailClient, type } = await getTransporter({ preferEthereal });
         const fromAddress = process.env.ALERT_EMAIL_FROM || '"API Sentinel" <alerts@apimonitor.dev>';
-        const dashboardUrl = process.env.DASHBOARD_URL || process.env.CORS_ORIGIN || "http://localhost:5173";
+        const dashboardUrl = process.env.DASHBOARD_URL || process.env.CORS_ORIGIN || "https://apimonitoring-jacqp9q52-420royalrajput50806-5145s-projects.vercel.app";
         const subject = `🚨 CRITICAL: API Down Alert - "${monitor.name}"`;
 
         const text = `
@@ -375,7 +375,7 @@ const sendRecoveryAlert = async ({
     try {
         const { transporter: mailClient, type } = await getTransporter({ preferEthereal });
         const fromAddress = process.env.ALERT_EMAIL_FROM || '"API Sentinel" <alerts@apimonitor.dev>';
-        const dashboardUrl = process.env.DASHBOARD_URL || process.env.CORS_ORIGIN || "http://localhost:5173";
+        const dashboardUrl = process.env.DASHBOARD_URL || process.env.CORS_ORIGIN || "https://apimonitoring-jacqp9q52-420royalrajput50806-5145s-projects.vercel.app";
         const subject = `✅ RESOLVED: API Back Online - "${monitor.name}"`;
 
         const text = `
