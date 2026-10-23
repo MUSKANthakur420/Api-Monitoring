@@ -180,7 +180,11 @@ const testAlert = asynchandler(async (req, res) => {
 
     let messageText;
     if (result.success) {
-        if (result.type === "smtp") {
+        if (result.type === "brevo") {
+            messageText = `Test alert email sent successfully to ${targetEmail} via Brevo HTTP API.`;
+        } else if (result.type === "resend") {
+            messageText = `Test alert email sent successfully to ${targetEmail} via Resend.`;
+        } else if (result.type === "smtp") {
             messageText = `Test alert email sent successfully to ${targetEmail} via real SMTP.`;
         } else if (result.type === "ethereal") {
             messageText = result.fallbackUsed

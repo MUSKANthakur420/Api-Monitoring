@@ -6,8 +6,49 @@ import MonitorCheck from "../model/monitorCheck.model.js";
 dotenv.config();
 
 let transporter = null;
-let transporterType = null; // 'resend' | 'smtp' | 'simulated'
+let transporterType = null; // 'brevo' | 'resend' | 'smtp' | 'simulated'
 let resendClient = null;
+
+const getBrevoApiKey = () => {
+    const key = (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY || "").trim();
+    if (!key || key.startsWith("your_") || key.length < 10) return null;
+    return key;
+};
+
+const sendViaBrevo = async ({ apiKey, from, to, subject, html, text }) => {
+    const senderEmail = (process.env.BREVO_SENDER || process.env.SMTP_USER || "rand2428ece@gmail.com").trim();
+    const senderName = process.env.ALERT_SENDER_NAME || "API Sentinel";
+
+    const recipients = (Array.isArray(to) ? to : [to]).map((target) => {
+        if (typeof target === "string") return { email: target.trim() };
+        return target;
+    });
+
+    const payload = {
+        sender: { name: senderName, email: senderEmail },
+        to: recipients,
+        subject: subject,
+        htmlContent: html,
+        textContent: text,
+    };
+
+    const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+            accept: "application/json",
+            "api-key": apiKey,
+            "content-type": "application/json",
+        },
+        body: JSON.stringify(payload),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        throw new Error(data.message || `Brevo API error (${res.status}): ${JSON.stringify(data)}`);
+    }
+
+    return { messageId: data.messageId || "brevo-" + Date.now() };
+};
 
 const isConfigured = (val) => {
     if (!val || typeof val !== "string") return false;
@@ -77,6 +118,7 @@ const getTransporter = async ({ forceRefresh = false, preferEthereal = false } =
     const smtpConfig = getSmtpConfig();
 
     if (transporter && !forceRefresh) {
+        if (transporterType === "brevo") return { transporter, type: transporterType, config: smtpConfig };
         if (transporterType === "resend") return { transporter, type: transporterType, config: smtpConfig };
         if (preferEthereal && transporterType === "ethereal") return { transporter, type: transporterType, config: smtpConfig };
         if (!preferEthereal && smtpConfig.configured && transporterType === "smtp") return { transporter, type: transporterType, config: smtpConfig };
@@ -85,7 +127,29 @@ const getTransporter = async ({ forceRefresh = false, preferEthereal = false } =
         }
     }
 
-    // 1. Resend HTTP API — works on Render (no SMTP port needed)
+    // 1. Brevo HTTP API — works on Render, sends to ANY recipient without needing a domain!
+    if (!preferEthereal) {
+        const brevoKey = getBrevoApiKey();
+        if (brevoKey) {
+            transporter = {
+                sendMail: async (options) => {
+                    return await sendViaBrevo({
+                        apiKey: brevoKey,
+                        from: options.from,
+                        to: options.to,
+                        subject: options.subject,
+                        html: options.html,
+                        text: options.text,
+                    });
+                },
+            };
+            transporterType = "brevo";
+            console.log(`📧 Brevo HTTP API transporter initialized (can send to ANY user!)`);
+            return { transporter, type: transporterType, config: smtpConfig };
+        }
+    }
+
+    // 2. Resend HTTP API — works on Render (no SMTP port needed)
     if (!preferEthereal) {
         const resend = getResendClient();
         if (resend) {
@@ -93,13 +157,34 @@ const getTransporter = async ({ forceRefresh = false, preferEthereal = false } =
             transporter = {
                 sendMail: async (options) => {
                     const fromAddress = process.env.RESEND_FROM || "API Sentinel <onboarding@resend.dev>";
-                    const result = await resend.emails.send({
+                    const targetRecipient = process.env.ALERT_FORCE_EMAIL || options.to;
+                    const recipientList = Array.isArray(targetRecipient) ? targetRecipient : [targetRecipient];
+
+                    let result = await resend.emails.send({
                         from: fromAddress,
-                        to: Array.isArray(options.to) ? options.to : [options.to],
+                        to: recipientList,
                         subject: options.subject,
                         html: options.html,
                         text: options.text,
                     });
+
+                    // If Resend free tier restricts to owner's registered email, auto-forward to it
+                    if (result.error) {
+                        const errorMsg = result.error.message || "";
+                        const match = errorMsg.match(/own email address \(([^)]+)\)/i);
+                        if (match && match[1]) {
+                            const allowedEmail = match[1].trim();
+                            console.warn(`⚠️ Resend free sandbox restricted to ${allowedEmail}. Auto-forwarding alert to ${allowedEmail}...`);
+                            result = await resend.emails.send({
+                                from: fromAddress,
+                                to: [allowedEmail],
+                                subject: `${options.subject} (Forwarded to ${allowedEmail})`,
+                                html: options.html,
+                                text: options.text,
+                            });
+                        }
+                    }
+
                     if (result.error) throw new Error(result.error.message || "Resend API error");
                     return { messageId: result.data?.id || "resend-" + Date.now() };
                 },
@@ -200,7 +285,18 @@ const getTransporter = async ({ forceRefresh = false, preferEthereal = false } =
 
 const verifyTransporter = async () => {
     const smtpConfig = getSmtpConfig();
+    const brevoKey = getBrevoApiKey();
     const resend = getResendClient();
+
+    if (brevoKey) {
+        return {
+            configured: true,
+            provider: "Brevo HTTP API",
+            user: process.env.BREVO_SENDER || smtpConfig.user || "rand2428ece@gmail.com",
+            status: "ready",
+            message: "Brevo HTTP API active — alerts will be sent to ANY logged-in user without domain restrictions.",
+        };
+    }
 
     if (resend) {
         return {
@@ -208,7 +304,7 @@ const verifyTransporter = async () => {
             provider: "Resend HTTP API",
             user: smtpConfig.user || "via Resend",
             status: "ready",
-            message: "Resend HTTP API configured — emails will work on Render (no SMTP ports needed).",
+            message: "Resend HTTP API configured — emails will work on Render.",
         };
     }
 
@@ -216,7 +312,7 @@ const verifyTransporter = async () => {
         return {
             configured: false,
             provider: "ethereal/simulated",
-            message: "No RESEND_API_KEY or SMTP credentials configured. Add RESEND_API_KEY in Render env vars for real emails.",
+            message: "No BREVO_API_KEY, RESEND_API_KEY or SMTP credentials configured. Test alerts will use simulation.",
         };
     }
 
