@@ -23,20 +23,24 @@ const isConfigured = (val) => {
 
 const getSmtpConfig = () => {
     let host = (process.env.SMTP_HOST || "").trim();
-    let port = Number(process.env.SMTP_PORT) || 587;
+    let port = Number(process.env.SMTP_PORT) || 0;
     let user = (process.env.SMTP_USER || "").trim();
     let pass = (process.env.SMTP_PASS || "").replace(/\s+/g, "").trim();
-    let secure = process.env.SMTP_SECURE === "true" || port === 465;
 
     const isGmail =
         (user && (user.toLowerCase().endsWith("@gmail.com") || user.toLowerCase().endsWith("@googlemail.com"))) ||
         (host && host.toLowerCase().includes("gmail")) ||
         process.env.SMTP_SERVICE?.toLowerCase() === "gmail";
 
-    if (isGmail && !host) {
-        host = "smtp.gmail.com";
-        if (!process.env.SMTP_PORT) port = 587;
+    // For Gmail, port 465 (SMTPS direct SSL) avoids ISP port 587 submission blocks
+    if (isGmail) {
+        if (!host) host = "smtp.gmail.com";
+        if (!port) port = 465;
+    } else {
+        if (!port) port = 587;
     }
+
+    let secure = process.env.SMTP_SECURE === "true" || port === 465;
 
     const configured = isConfigured(host) && isConfigured(user) && isConfigured(pass);
 
@@ -51,7 +55,7 @@ const getSmtpConfig = () => {
     };
 };
 
-const sendMailWithTimeout = async (client, options, timeoutMs = 5000) => {
+const sendMailWithTimeout = async (client, options, timeoutMs = 10000) => {
     return Promise.race([
         client.sendMail(options),
         new Promise((_, reject) =>
@@ -74,24 +78,37 @@ const getTransporter = async ({ forceRefresh = false, preferEthereal = false } =
     // 1. Real SMTP when credentials are valid and Ethereal is not explicitly requested
     if (!preferEthereal && smtpConfig.configured) {
         try {
-            transporter = nodemailer.createTransport({
-                host: smtpConfig.host,
-                port: smtpConfig.port,
-                secure: smtpConfig.secure,
-                auth: {
-                    user: smtpConfig.user,
-                    pass: smtpConfig.pass,
-                },
-                connectionTimeout: 4000,
-                greetingTimeout: 3000,
-                socketTimeout: 5000,
-                ...(smtpConfig.isGmail ? { service: "gmail" } : {}),
-                tls: {
-                    rejectUnauthorized: false,
-                },
-            });
+            // For Gmail, service: "gmail" uses direct SSL port 465 natively without port 587 timeouts
+            const transportOptions = smtpConfig.isGmail
+                ? {
+                      service: "gmail",
+                      auth: {
+                          user: smtpConfig.user,
+                          pass: smtpConfig.pass,
+                      },
+                      connectionTimeout: 10000,
+                      greetingTimeout: 8000,
+                      socketTimeout: 15000,
+                  }
+                : {
+                      host: smtpConfig.host,
+                      port: smtpConfig.port,
+                      secure: smtpConfig.secure,
+                      auth: {
+                          user: smtpConfig.user,
+                          pass: smtpConfig.pass,
+                      },
+                      connectionTimeout: 10000,
+                      greetingTimeout: 8000,
+                      socketTimeout: 15000,
+                      tls: {
+                          rejectUnauthorized: false,
+                      },
+                  };
+
+            transporter = nodemailer.createTransport(transportOptions);
             transporterType = "smtp";
-            console.log(`📧 Real SMTP transporter initialized (${smtpConfig.host}:${smtpConfig.port}) for ${smtpConfig.user}`);
+            console.log(`📧 Real SMTP transporter initialized (${smtpConfig.isGmail ? "Gmail SSL" : `${smtpConfig.host}:${smtpConfig.port}`}) for ${smtpConfig.user}`);
             return { transporter, type: transporterType, config: smtpConfig };
         } catch (smtpErr) {
             console.warn("⚠️ Real SMTP setup failed, checking fallback:", smtpErr.message);
@@ -105,7 +122,7 @@ const getTransporter = async ({ forceRefresh = false, preferEthereal = false } =
             const testAccount = await Promise.race([
                 nodemailer.createTestAccount(),
                 new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error("Ethereal test account setup timed out (3s)")), 3000)
+                    setTimeout(() => reject(new Error("Ethereal test account setup timed out (4s)")), 4000)
                 ),
             ]);
             transporter = nodemailer.createTransport({
@@ -116,9 +133,9 @@ const getTransporter = async ({ forceRefresh = false, preferEthereal = false } =
                     user: testAccount.user,
                     pass: testAccount.pass,
                 },
-                connectionTimeout: 4000,
-                greetingTimeout: 3000,
-                socketTimeout: 5000,
+                connectionTimeout: 8000,
+                greetingTimeout: 6000,
+                socketTimeout: 10000,
             });
             transporterType = "ethereal";
             console.log(`🧪 Ethereal test SMTP transporter initialized (${testAccount.user})`);
