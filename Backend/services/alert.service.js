@@ -15,32 +15,80 @@ const isConfigured = (val) => {
     return !(
         lower === "your_email@gmail.com" ||
         lower === "your_app_password" ||
+        lower === "your url" ||
         lower.startsWith("your_") ||
         lower.includes("example.com")
     );
 };
 
-const getTransporter = async ({ forceRefresh = false, preferEthereal = false } = {}) => {
-    if (transporter && !forceRefresh) return { transporter, type: transporterType };
+const getSmtpConfig = () => {
+    let host = (process.env.SMTP_HOST || "").trim();
+    let port = Number(process.env.SMTP_PORT) || 587;
+    let user = (process.env.SMTP_USER || "").trim();
+    let pass = (process.env.SMTP_PASS || "").replace(/\s+/g, "").trim();
+    let secure = process.env.SMTP_SECURE === "true" || port === 465;
 
-    // 1. If preferEthereal is not requested and real SMTP is configured
-    if (!preferEthereal && isConfigured(process.env.SMTP_HOST) && isConfigured(process.env.SMTP_USER) && isConfigured(process.env.SMTP_PASS)) {
-        transporter = nodemailer.createTransport({
-            host: process.env.SMTP_HOST,
-            port: Number(process.env.SMTP_PORT) || 587,
-            secure: process.env.SMTP_SECURE === "true",
-            auth: {
-                user: process.env.SMTP_USER,
-                pass: process.env.SMTP_PASS,
-            },
-        });
-        transporterType = "smtp";
-        console.log(`📧 Real SMTP transporter initialized (${process.env.SMTP_HOST}:${process.env.SMTP_PORT || 587})`);
-        return { transporter, type: transporterType };
+    const isGmail =
+        (user && (user.toLowerCase().endsWith("@gmail.com") || user.toLowerCase().endsWith("@googlemail.com"))) ||
+        (host && host.toLowerCase().includes("gmail")) ||
+        process.env.SMTP_SERVICE?.toLowerCase() === "gmail";
+
+    if (isGmail && !host) {
+        host = "smtp.gmail.com";
+        if (!process.env.SMTP_PORT) port = 587;
     }
 
-    // 2. If preferEthereal is true or USE_ETHEREAL=true
-    if (preferEthereal || process.env.USE_ETHEREAL === "true") {
+    const configured = isConfigured(host) && isConfigured(user) && isConfigured(pass);
+
+    return {
+        configured,
+        host,
+        port,
+        user,
+        pass,
+        secure,
+        isGmail,
+    };
+};
+
+const getTransporter = async ({ forceRefresh = false, preferEthereal = false } = {}) => {
+    const smtpConfig = getSmtpConfig();
+
+    if (transporter && !forceRefresh) {
+        if (preferEthereal && transporterType === "ethereal") return { transporter, type: transporterType, config: smtpConfig };
+        if (!preferEthereal && smtpConfig.configured && transporterType === "smtp") return { transporter, type: transporterType, config: smtpConfig };
+        if (!preferEthereal && !smtpConfig.configured && (transporterType === "ethereal" || transporterType === "simulated")) {
+            return { transporter, type: transporterType, config: smtpConfig };
+        }
+    }
+
+    // 1. Real SMTP when credentials are valid and Ethereal is not explicitly requested
+    if (!preferEthereal && smtpConfig.configured) {
+        try {
+            transporter = nodemailer.createTransport({
+                host: smtpConfig.host,
+                port: smtpConfig.port,
+                secure: smtpConfig.secure,
+                auth: {
+                    user: smtpConfig.user,
+                    pass: smtpConfig.pass,
+                },
+                ...(smtpConfig.isGmail ? { service: "gmail" } : {}),
+                tls: {
+                    rejectUnauthorized: false,
+                },
+            });
+            transporterType = "smtp";
+            console.log(`📧 Real SMTP transporter initialized (${smtpConfig.host}:${smtpConfig.port}) for ${smtpConfig.user}`);
+            return { transporter, type: transporterType, config: smtpConfig };
+        } catch (smtpErr) {
+            console.warn("⚠️ Real SMTP setup failed, checking fallback:", smtpErr.message);
+        }
+    }
+
+    // 2. Ethereal Test Transporter (if preferred, USE_ETHEREAL=true, or unconfigured outside test suite)
+    const allowEthereal = preferEthereal || process.env.USE_ETHEREAL === "true" || (!smtpConfig.configured && process.env.NODE_ENV !== "test");
+    if (allowEthereal) {
         try {
             const testAccount = await nodemailer.createTestAccount();
             transporter = nodemailer.createTransport({
@@ -54,13 +102,13 @@ const getTransporter = async ({ forceRefresh = false, preferEthereal = false } =
             });
             transporterType = "ethereal";
             console.log(`🧪 Ethereal test SMTP transporter initialized (${testAccount.user})`);
-            return { transporter, type: transporterType };
+            return { transporter, type: transporterType, config: smtpConfig, etherealUser: testAccount.user };
         } catch (etherealErr) {
             console.warn("⚠️ Could not initialize Ethereal test account:", etherealErr.message);
         }
     }
 
-    // 3. Fallback: development / simulated transporter
+    // 3. Fallback: Simulated transporter (terminal console logger)
     transporter = {
         sendMail: async (options) => {
             console.log("\n================ [EMAIL ALERT DISPATCHED (SIMULATED)] ================");
@@ -73,21 +121,19 @@ const getTransporter = async ({ forceRefresh = false, preferEthereal = false } =
         },
     };
     transporterType = "simulated";
-    console.log("ℹ️ No valid SMTP credentials found in .env. Using simulated email logger (printed to console)");
+    console.log("ℹ️ Using simulated email logger (printed to console)");
 
-    return { transporter, type: transporterType };
+    return { transporter, type: transporterType, config: smtpConfig };
 };
 
 const verifyTransporter = async () => {
-    const isSmtpReady = isConfigured(process.env.SMTP_HOST) &&
-                        isConfigured(process.env.SMTP_USER) &&
-                        isConfigured(process.env.SMTP_PASS);
+    const smtpConfig = getSmtpConfig();
 
-    if (!isSmtpReady) {
+    if (!smtpConfig.configured) {
         return {
             configured: false,
-            provider: "simulated",
-            message: "SMTP is not configured with real credentials in .env (placeholder or missing values).",
+            provider: "ethereal/simulated",
+            message: "SMTP is not configured with real credentials in .env (placeholder or missing values). Test alerts will use Ethereal mock inbox or console simulation.",
         };
     }
 
@@ -97,26 +143,27 @@ const verifyTransporter = async () => {
             await client.verify();
             return {
                 configured: true,
-                provider: process.env.SMTP_HOST,
-                user: process.env.SMTP_USER,
+                provider: smtpConfig.host,
+                user: smtpConfig.user,
                 status: "connected",
-                message: "SMTP connection verified successfully.",
+                message: `SMTP connection verified successfully with ${smtpConfig.host}`,
             };
         }
         return {
             configured: true,
-            provider: "custom",
+            provider: smtpConfig.host,
+            user: smtpConfig.user,
             status: "ready",
             message: "Transporter ready.",
         };
     } catch (err) {
         return {
             configured: true,
-            provider: process.env.SMTP_HOST,
-            user: process.env.SMTP_USER,
+            provider: smtpConfig.host,
+            user: smtpConfig.user,
             status: "error",
             error: err.message,
-            message: `SMTP connection failed: ${err.message}`,
+            message: `SMTP connection failed: ${err.message}. If using Gmail, make sure you use a 16-character Google App Password (https://myaccount.google.com/apppasswords).`,
         };
     }
 };
@@ -130,13 +177,34 @@ const sendDowntimeAlert = async ({
     errorMessage,
     preferEthereal = false,
 }) => {
+    // Record incident in database immediately if this is a registered monitor
+    if (monitor?.id) {
+        try {
+            await MonitorCheck.recordIncidentAlert(
+                monitor.id,
+                "down",
+                statusCode,
+                responseTime,
+                errorMessage || "API DOWN",
+                userEmail
+            );
+        } catch (dbErr) {
+            console.warn("⚠️ Could not record incident alert in DB:", dbErr.message);
+        }
+    }
+
+    let text = "";
+    let html = "";
     try {
-        const { transporter: mailClient, type } = await getTransporter({ preferEthereal });
-        const fromAddress = process.env.ALERT_EMAIL_FROM || '"API Sentinel" <alerts@apimonitor.dev>';
+        const { transporter: mailClient, type, config } = await getTransporter({ preferEthereal });
+        const defaultFrom = config?.configured && config?.user
+            ? `"API Sentinel" <${config.user}>`
+            : '"API Sentinel" <alerts@apimonitor.dev>';
+        const fromAddress = process.env.ALERT_EMAIL_FROM || defaultFrom;
         const dashboardUrl = process.env.DASHBOARD_URL || process.env.CORS_ORIGIN || "https://apimonitoring-jacqp9q52-420royalrajput50806-5145s-projects.vercel.app";
         const subject = `🚨 CRITICAL: API Down Alert - "${monitor.name}"`;
 
-        const text = `
+        text = `
 [CRITICAL ALERT] API Down: "${monitor.name}"
 ============================================================
 
@@ -165,7 +233,7 @@ Dashboard: ${dashboardUrl}
 API Monitoring Platform Sentinel
 `;
 
-        const html = `
+        html = `
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -333,22 +401,6 @@ API Monitoring Platform Sentinel
             console.log(`🔗 Email Preview URL: ${previewUrl}`);
         }
 
-        // Record incident in database if this is a registered monitor
-        if (monitor?.id) {
-            try {
-                await MonitorCheck.recordIncidentAlert(
-                    monitor.id,
-                    "down",
-                    statusCode,
-                    responseTime,
-                    errorMessage || "API DOWN",
-                    userEmail
-                );
-            } catch (dbErr) {
-                console.warn("⚠️ Could not record incident alert in DB:", dbErr.message);
-            }
-        }
-
         return {
             success: true,
             messageId: info.messageId,
@@ -357,6 +409,35 @@ API Monitoring Platform Sentinel
         };
     } catch (err) {
         console.error("❌ Failed to send downtime alert email:", err.message);
+
+        // Graceful Ethereal fallback if real SMTP failed
+        if (!preferEthereal && process.env.NODE_ENV !== "test") {
+            try {
+                console.log("🔄 Attempting Ethereal test account fallback after SMTP error...");
+                const fallback = await getTransporter({ forceRefresh: true, preferEthereal: true });
+                if (fallback?.type === "ethereal") {
+                    const fallbackInfo = await fallback.transporter.sendMail({
+                        from: '"API Sentinel (Fallback)" <alerts@apimonitor.dev>',
+                        to: userEmail,
+                        subject: `🚨 CRITICAL: API Down Alert - "${monitor.name}"`,
+                        text,
+                        html,
+                    });
+                    const fallbackUrl = nodemailer.getTestMessageUrl(fallbackInfo);
+                    return {
+                        success: true,
+                        messageId: fallbackInfo.messageId,
+                        previewUrl: fallbackUrl || null,
+                        type: "ethereal",
+                        fallbackUsed: true,
+                        smtpError: err.message,
+                    };
+                }
+            } catch (fallbackErr) {
+                console.warn("⚠️ Ethereal fallback failed:", fallbackErr.message);
+            }
+        }
+
         return {
             success: false,
             error: err.message,
@@ -372,13 +453,34 @@ const sendRecoveryAlert = async ({
     responseTime = 0,
     preferEthereal = false,
 }) => {
+    // Record incident in database immediately if this is a registered monitor
+    if (monitor?.id) {
+        try {
+            await MonitorCheck.recordIncidentAlert(
+                monitor.id,
+                "recovery",
+                statusCode,
+                responseTime,
+                "API Service Restored",
+                userEmail
+            );
+        } catch (dbErr) {
+            console.warn("⚠️ Could not record incident alert in DB:", dbErr.message);
+        }
+    }
+
+    let text = "";
+    let html = "";
     try {
-        const { transporter: mailClient, type } = await getTransporter({ preferEthereal });
-        const fromAddress = process.env.ALERT_EMAIL_FROM || '"API Sentinel" <alerts@apimonitor.dev>';
+        const { transporter: mailClient, type, config } = await getTransporter({ preferEthereal });
+        const defaultFrom = config?.configured && config?.user
+            ? `"API Sentinel" <${config.user}>`
+            : '"API Sentinel" <alerts@apimonitor.dev>';
+        const fromAddress = process.env.ALERT_EMAIL_FROM || defaultFrom;
         const dashboardUrl = process.env.DASHBOARD_URL || process.env.CORS_ORIGIN || "https://apimonitoring-jacqp9q52-420royalrajput50806-5145s-projects.vercel.app";
         const subject = `✅ RESOLVED: API Back Online - "${monitor.name}"`;
 
-        const text = `
+        text = `
 [INCIDENT RESOLVED] API Restored: "${monitor.name}"
 ============================================================
 
@@ -535,21 +637,6 @@ API Monitoring Platform Sentinel
             console.log(`🔗 Email Preview URL: ${previewUrl}`);
         }
 
-        if (monitor?.id) {
-            try {
-                await MonitorCheck.recordIncidentAlert(
-                    monitor.id,
-                    "recovery",
-                    statusCode,
-                    responseTime,
-                    "API Service Restored",
-                    userEmail
-                );
-            } catch (dbErr) {
-                console.warn("⚠️ Could not record incident alert in DB:", dbErr.message);
-            }
-        }
-
         return {
             success: true,
             messageId: info.messageId,
@@ -558,6 +645,35 @@ API Monitoring Platform Sentinel
         };
     } catch (err) {
         console.error("❌ Failed to send recovery alert email:", err.message);
+
+        // Graceful Ethereal fallback if real SMTP failed
+        if (!preferEthereal && process.env.NODE_ENV !== "test") {
+            try {
+                console.log("🔄 Attempting Ethereal test account fallback after SMTP error...");
+                const fallback = await getTransporter({ forceRefresh: true, preferEthereal: true });
+                if (fallback?.type === "ethereal") {
+                    const fallbackInfo = await fallback.transporter.sendMail({
+                        from: '"API Sentinel (Fallback)" <alerts@apimonitor.dev>',
+                        to: userEmail,
+                        subject: `✅ RESOLVED: API Back Online - "${monitor.name}"`,
+                        text,
+                        html,
+                    });
+                    const fallbackUrl = nodemailer.getTestMessageUrl(fallbackInfo);
+                    return {
+                        success: true,
+                        messageId: fallbackInfo.messageId,
+                        previewUrl: fallbackUrl || null,
+                        type: "ethereal",
+                        fallbackUsed: true,
+                        smtpError: err.message,
+                    };
+                }
+            } catch (fallbackErr) {
+                console.warn("⚠️ Ethereal fallback failed:", fallbackErr.message);
+            }
+        }
+
         return {
             success: false,
             error: err.message,
@@ -608,7 +724,8 @@ const AlertService = {
     sendTestAlert,
     verifyTransporter,
     getTransporter,
+    getSmtpConfig,
 };
 
 export default AlertService;
-export { sendDowntimeAlert, sendRecoveryAlert, sendTestAlert, verifyTransporter, getTransporter };
+export { sendDowntimeAlert, sendRecoveryAlert, sendTestAlert, verifyTransporter, getTransporter, getSmtpConfig };

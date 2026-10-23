@@ -178,10 +178,25 @@ const testAlert = asynchandler(async (req, res) => {
         preferEthereal: Boolean(preferEthereal),
     });
 
+    let messageText;
+    if (result.success) {
+        if (result.type === "smtp") {
+            messageText = `Test alert email sent successfully to ${targetEmail} via real SMTP.`;
+        } else if (result.type === "ethereal") {
+            messageText = result.fallbackUsed
+                ? `SMTP failed (${result.smtpError}). Fallback test alert dispatched to Ethereal mock inbox.`
+                : `Test alert generated via Ethereal test inbox. Preview link available.`;
+        } else {
+            messageText = `Test alert logged (simulated transporter).`;
+        }
+    } else {
+        messageText = `Failed to send alert: ${result.error}`;
+    }
+
     return res.status(result.success ? 200 : 500).json(
         new apires(
             result.success ? 200 : 500,
-            result.success ? `Test alert sent to ${targetEmail}` : `Failed to send alert: ${result.error}`,
+            messageText,
             result
         )
     );

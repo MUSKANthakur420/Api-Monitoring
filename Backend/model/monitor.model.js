@@ -106,7 +106,7 @@ const getAllActiveMonitors = async (onlyDue = false) => {
 };
 
 const updateMonitorStatus = async (id, { lastStatus, lastStatusCode, lastResponseTime, isUp }) => {
-    const consecutiveFailuresClause = isUp ? "0" : "consecutive_failures + 1";
+    const consecutiveFailuresClause = isUp ? "0" : "COALESCE(consecutive_failures, 0) + 1";
     const result = await pool.query(
         `UPDATE monitors
          SET last_status = $1,

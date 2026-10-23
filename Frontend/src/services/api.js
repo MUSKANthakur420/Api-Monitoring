@@ -90,10 +90,10 @@ export const monitorAPI = {
     apiRequest(`/monitors/${id}/metrics?hours=${hours}`),
   getHistory: (id, limit = 50) =>
     apiRequest(`/monitors/${id}/history?limit=${limit}`),
-  testAlert: (email, type = "down") =>
+  testAlert: (email, type = "down", preferEthereal = false) =>
     apiRequest("/monitors/test-alert", {
       method: "POST",
-      body: JSON.stringify({ email, type }),
+      body: JSON.stringify({ email, type, preferEthereal }),
     }),
   getAlertConfig: () => apiRequest("/monitors/alert-config"),
 };
