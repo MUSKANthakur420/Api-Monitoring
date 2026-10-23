@@ -51,13 +51,22 @@ const getSmtpConfig = () => {
     };
 };
 
+const sendMailWithTimeout = async (client, options, timeoutMs = 5000) => {
+    return Promise.race([
+        client.sendMail(options),
+        new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`Email transport timed out after ${timeoutMs}ms. Hosting network may be blocking SMTP port.`)), timeoutMs)
+        ),
+    ]);
+};
+
 const getTransporter = async ({ forceRefresh = false, preferEthereal = false } = {}) => {
     const smtpConfig = getSmtpConfig();
 
     if (transporter && !forceRefresh) {
         if (preferEthereal && transporterType === "ethereal") return { transporter, type: transporterType, config: smtpConfig };
         if (!preferEthereal && smtpConfig.configured && transporterType === "smtp") return { transporter, type: transporterType, config: smtpConfig };
-        if (!preferEthereal && !smtpConfig.configured && (transporterType === "ethereal" || transporterType === "simulated")) {
+        if (!preferEthereal && !smtpConfig.configured && transporterType === "simulated") {
             return { transporter, type: transporterType, config: smtpConfig };
         }
     }
@@ -73,6 +82,9 @@ const getTransporter = async ({ forceRefresh = false, preferEthereal = false } =
                     user: smtpConfig.user,
                     pass: smtpConfig.pass,
                 },
+                connectionTimeout: 4000,
+                greetingTimeout: 3000,
+                socketTimeout: 5000,
                 ...(smtpConfig.isGmail ? { service: "gmail" } : {}),
                 tls: {
                     rejectUnauthorized: false,
@@ -86,11 +98,16 @@ const getTransporter = async ({ forceRefresh = false, preferEthereal = false } =
         }
     }
 
-    // 2. Ethereal Test Transporter (if preferred, USE_ETHEREAL=true, or unconfigured outside test suite)
-    const allowEthereal = preferEthereal || process.env.USE_ETHEREAL === "true" || (!smtpConfig.configured && process.env.NODE_ENV !== "test");
+    // 2. Ethereal Test Transporter (ONLY if explicitly preferred or USE_ETHEREAL=true)
+    const allowEthereal = preferEthereal || process.env.USE_ETHEREAL === "true";
     if (allowEthereal) {
         try {
-            const testAccount = await nodemailer.createTestAccount();
+            const testAccount = await Promise.race([
+                nodemailer.createTestAccount(),
+                new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error("Ethereal test account setup timed out (3s)")), 3000)
+                ),
+            ]);
             transporter = nodemailer.createTransport({
                 host: testAccount.smtp.host,
                 port: testAccount.smtp.port,
@@ -99,6 +116,9 @@ const getTransporter = async ({ forceRefresh = false, preferEthereal = false } =
                     user: testAccount.user,
                     pass: testAccount.pass,
                 },
+                connectionTimeout: 4000,
+                greetingTimeout: 3000,
+                socketTimeout: 5000,
             });
             transporterType = "ethereal";
             console.log(`🧪 Ethereal test SMTP transporter initialized (${testAccount.user})`);
@@ -108,7 +128,7 @@ const getTransporter = async ({ forceRefresh = false, preferEthereal = false } =
         }
     }
 
-    // 3. Fallback: Simulated transporter (terminal console logger)
+    // 3. Fallback: Instant Simulated transporter (zero lag, prints to console)
     transporter = {
         sendMail: async (options) => {
             console.log("\n================ [EMAIL ALERT DISPATCHED (SIMULATED)] ================");
@@ -121,7 +141,7 @@ const getTransporter = async ({ forceRefresh = false, preferEthereal = false } =
         },
     };
     transporterType = "simulated";
-    console.log("ℹ️ Using simulated email logger (printed to console)");
+    console.log("ℹ️ Using instant simulated email logger (printed to console)");
 
     return { transporter, type: transporterType, config: smtpConfig };
 };
@@ -388,13 +408,13 @@ API Monitoring Platform Sentinel
 </html>
 `;
 
-        const info = await mailClient.sendMail({
+        const info = await sendMailWithTimeout(mailClient, {
             from: fromAddress,
             to: userEmail,
             subject,
             text,
             html,
-        });
+        }, 5000);
 
         const previewUrl = nodemailer.getTestMessageUrl(info);
         if (previewUrl) {
@@ -409,35 +429,6 @@ API Monitoring Platform Sentinel
         };
     } catch (err) {
         console.error("❌ Failed to send downtime alert email:", err.message);
-
-        // Graceful Ethereal fallback if real SMTP failed
-        if (!preferEthereal && process.env.NODE_ENV !== "test") {
-            try {
-                console.log("🔄 Attempting Ethereal test account fallback after SMTP error...");
-                const fallback = await getTransporter({ forceRefresh: true, preferEthereal: true });
-                if (fallback?.type === "ethereal") {
-                    const fallbackInfo = await fallback.transporter.sendMail({
-                        from: '"API Sentinel (Fallback)" <alerts@apimonitor.dev>',
-                        to: userEmail,
-                        subject: `🚨 CRITICAL: API Down Alert - "${monitor.name}"`,
-                        text,
-                        html,
-                    });
-                    const fallbackUrl = nodemailer.getTestMessageUrl(fallbackInfo);
-                    return {
-                        success: true,
-                        messageId: fallbackInfo.messageId,
-                        previewUrl: fallbackUrl || null,
-                        type: "ethereal",
-                        fallbackUsed: true,
-                        smtpError: err.message,
-                    };
-                }
-            } catch (fallbackErr) {
-                console.warn("⚠️ Ethereal fallback failed:", fallbackErr.message);
-            }
-        }
-
         return {
             success: false,
             error: err.message,
@@ -624,13 +615,13 @@ API Monitoring Platform Sentinel
 </html>
 `;
 
-        const info = await mailClient.sendMail({
+        const info = await sendMailWithTimeout(mailClient, {
             from: fromAddress,
             to: userEmail,
             subject,
             text,
             html,
-        });
+        }, 5000);
 
         const previewUrl = nodemailer.getTestMessageUrl(info);
         if (previewUrl) {
@@ -645,35 +636,6 @@ API Monitoring Platform Sentinel
         };
     } catch (err) {
         console.error("❌ Failed to send recovery alert email:", err.message);
-
-        // Graceful Ethereal fallback if real SMTP failed
-        if (!preferEthereal && process.env.NODE_ENV !== "test") {
-            try {
-                console.log("🔄 Attempting Ethereal test account fallback after SMTP error...");
-                const fallback = await getTransporter({ forceRefresh: true, preferEthereal: true });
-                if (fallback?.type === "ethereal") {
-                    const fallbackInfo = await fallback.transporter.sendMail({
-                        from: '"API Sentinel (Fallback)" <alerts@apimonitor.dev>',
-                        to: userEmail,
-                        subject: `✅ RESOLVED: API Back Online - "${monitor.name}"`,
-                        text,
-                        html,
-                    });
-                    const fallbackUrl = nodemailer.getTestMessageUrl(fallbackInfo);
-                    return {
-                        success: true,
-                        messageId: fallbackInfo.messageId,
-                        previewUrl: fallbackUrl || null,
-                        type: "ethereal",
-                        fallbackUsed: true,
-                        smtpError: err.message,
-                    };
-                }
-            } catch (fallbackErr) {
-                console.warn("⚠️ Ethereal fallback failed:", fallbackErr.message);
-            }
-        }
-
         return {
             success: false,
             error: err.message,
