@@ -1,11 +1,13 @@
 import nodemailer from "nodemailer";
+import { Resend } from "resend";
 import dotenv from "dotenv";
 import MonitorCheck from "../model/monitorCheck.model.js";
 
 dotenv.config();
 
 let transporter = null;
-let transporterType = null; // 'smtp' | 'ethereal' | 'simulated'
+let transporterType = null; // 'resend' | 'smtp' | 'simulated'
+let resendClient = null;
 
 const isConfigured = (val) => {
     if (!val || typeof val !== "string") return false;
@@ -64,10 +66,18 @@ const sendMailWithTimeout = async (client, options, timeoutMs = 10000) => {
     ]);
 };
 
+const getResendClient = () => {
+    const apiKey = (process.env.RESEND_API_KEY || "").trim();
+    if (!apiKey || apiKey === "re_your_api_key_here" || !apiKey.startsWith("re_")) return null;
+    if (!resendClient) resendClient = new Resend(apiKey);
+    return resendClient;
+};
+
 const getTransporter = async ({ forceRefresh = false, preferEthereal = false } = {}) => {
     const smtpConfig = getSmtpConfig();
 
     if (transporter && !forceRefresh) {
+        if (transporterType === "resend") return { transporter, type: transporterType, config: smtpConfig };
         if (preferEthereal && transporterType === "ethereal") return { transporter, type: transporterType, config: smtpConfig };
         if (!preferEthereal && smtpConfig.configured && transporterType === "smtp") return { transporter, type: transporterType, config: smtpConfig };
         if (!preferEthereal && !smtpConfig.configured && transporterType === "simulated") {
@@ -75,7 +85,32 @@ const getTransporter = async ({ forceRefresh = false, preferEthereal = false } =
         }
     }
 
-    // 1. Real SMTP when credentials are valid and Ethereal is not explicitly requested
+    // 1. Resend HTTP API — works on Render (no SMTP port needed)
+    if (!preferEthereal) {
+        const resend = getResendClient();
+        if (resend) {
+            // Wrap Resend in a sendMail-compatible interface
+            transporter = {
+                sendMail: async (options) => {
+                    const fromAddress = process.env.RESEND_FROM || "API Sentinel <onboarding@resend.dev>";
+                    const result = await resend.emails.send({
+                        from: fromAddress,
+                        to: Array.isArray(options.to) ? options.to : [options.to],
+                        subject: options.subject,
+                        html: options.html,
+                        text: options.text,
+                    });
+                    if (result.error) throw new Error(result.error.message || "Resend API error");
+                    return { messageId: result.data?.id || "resend-" + Date.now() };
+                },
+            };
+            transporterType = "resend";
+            console.log(`📧 Resend HTTP transporter initialized for ${smtpConfig.user || "configured account"}`);
+            return { transporter, type: transporterType, config: smtpConfig };
+        }
+    }
+
+    // 2. Real SMTP when credentials are valid and Ethereal is not explicitly requested
     if (!preferEthereal && smtpConfig.configured) {
         try {
             // For Gmail, service: "gmail" uses direct SSL port 465 natively without port 587 timeouts
@@ -115,7 +150,7 @@ const getTransporter = async ({ forceRefresh = false, preferEthereal = false } =
         }
     }
 
-    // 2. Ethereal Test Transporter (ONLY if explicitly preferred or USE_ETHEREAL=true)
+    // 3. Ethereal Test Transporter (ONLY if explicitly preferred or USE_ETHEREAL=true)
     const allowEthereal = preferEthereal || process.env.USE_ETHEREAL === "true";
     if (allowEthereal) {
         try {
@@ -145,7 +180,7 @@ const getTransporter = async ({ forceRefresh = false, preferEthereal = false } =
         }
     }
 
-    // 3. Fallback: Instant Simulated transporter (zero lag, prints to console)
+    // 4. Fallback: Instant Simulated transporter (zero lag, prints to console)
     transporter = {
         sendMail: async (options) => {
             console.log("\n================ [EMAIL ALERT DISPATCHED (SIMULATED)] ================");
@@ -165,12 +200,23 @@ const getTransporter = async ({ forceRefresh = false, preferEthereal = false } =
 
 const verifyTransporter = async () => {
     const smtpConfig = getSmtpConfig();
+    const resend = getResendClient();
+
+    if (resend) {
+        return {
+            configured: true,
+            provider: "Resend HTTP API",
+            user: smtpConfig.user || "via Resend",
+            status: "ready",
+            message: "Resend HTTP API configured — emails will work on Render (no SMTP ports needed).",
+        };
+    }
 
     if (!smtpConfig.configured) {
         return {
             configured: false,
             provider: "ethereal/simulated",
-            message: "SMTP is not configured with real credentials in .env (placeholder or missing values). Test alerts will use Ethereal mock inbox or console simulation.",
+            message: "No RESEND_API_KEY or SMTP credentials configured. Add RESEND_API_KEY in Render env vars for real emails.",
         };
     }
 
@@ -200,7 +246,7 @@ const verifyTransporter = async () => {
             user: smtpConfig.user,
             status: "error",
             error: err.message,
-            message: `SMTP connection failed: ${err.message}. If using Gmail, make sure you use a 16-character Google App Password (https://myaccount.google.com/apppasswords).`,
+            message: `SMTP connection failed: ${err.message}. Add RESEND_API_KEY in Render env vars to fix this.`,
         };
     }
 };
